@@ -1,0 +1,216 @@
+
+import os.path
+import gunpowder as gp
+import h5py
+import io
+import logging
+import math
+import numpy as np
+import random
+import requests
+import torch
+from torch import nn
+import zarr
+#import tensorflow as tf
+#from tensorflow.keras.optimizers import Adam , RMSprop
+#import tensorflow.keras.backend as K
+#from tensorflow.keras.callbacks import ModelCheckpoint , EarlyStopping , CSVLogger
+#from tensorflow.keras.losses import binary_crossentropy
+#from tensorflow.keras.models import Model
+#from tensorflow.keras.layers import *
+#from tensorflow.keras.optimizers import Adam , RMSprop
+from funlib.learn.torch.models import UNet, ConvPass
+from gunpowder.torch import Train
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from pillow_loss_model import *
+import torch.nn.functional as F
+from segmentation_models_pytorch import UnetPlusPlus
+import os
+
+
+input_size = gp.Coordinate((512, 512))
+output_size = gp.Coordinate((512, 512))
+voxel_size = gp.Coordinate((1, 1))
+num_fmaps=16
+num_samples=587
+batch_size=6
+os.environ["TORCH_HOME"] = "./trainingFiles"
+
+
+class detectionLoss(torch.nn.Module):
+
+    def __init__(self, smooth=1.0):
+        super(detectionLoss, self).__init__()
+        self.classification_loss = torch.nn.BCELoss()  
+        self.regression_loss = torch.nn.SmoothL1Loss()
+        self.bce_loss = torch.nn.BCELoss()
+        self.smooth=smooth
+
+    def forward(self, preds, targets): #, cls_logits, target_classes):
+        # target_classes = target_classes.float()
+        targets = targets.float()
+
+        # loss_cls = self.classification_loss(cls_logits, target_classes)
+        # loss_bbox = self.regression_loss(bbox_preds, target_boxes)
+        intersection = (preds * targets).sum(dim=(1, 2))
+        union = preds.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
+        dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1.0 - dice.mean()
+        bce_loss = self.bce_loss(preds, targets)
+        # loss =  dice_loss + bce_loss
+
+        # print(f"BCE Loss: {bce_loss.item():.4f}, Dice Loss: {dice_loss.item():.4f}, Total Loss: {loss.item():.4f}")
+        print(f"Total Loss: {bce_loss.item():.4f}")
+
+        return bce_loss
+
+
+class detectionModel(torch.nn.Module):
+
+    def __init__(self, in_channels=1, num_fmaps=num_fmaps, bbox_num=10):
+        super().__init__()
+        self.in_channels = in_channels
+        self.bbox_num = bbox_num
+
+        self.unetplusplus = UnetPlusPlus(
+            encoder_name="resnet34",
+            encoder_weights="imagenet",
+            in_channels=1,
+            classes=1,
+            activation="sigmoid"
+        )
+
+        #self.classification_head = nn.Sequential(nn.Conv2d(num_fmaps, 8, kernel_size=3, padding=1), nn.ReLU(), nn.Conv2d(8, 1, kernel_size=1))  # Shape: (batch_size, num_classes, H, W)
+        self.classification_head = ConvPass(num_fmaps, 1, [[1, 1]], activation='Sigmoid')
+
+
+        #self.regression_head = nn.Sequential(nn.Conv2d(num_fmaps, 8, kernel_size=3, padding=1), nn.ReLU(), nn.Conv2d(8, 4 * self.bbox_num, kernel_size=1))  # Shape: (batch_size, 4*bbox_num, H, W)
+
+    def forward(self, input):
+
+        cls_logits = self.unetplusplus(input)
+        #print(features.shape, "..............................................")
+        #cls_logits = self.classification_head(features)
+        cls_logits = torch.squeeze(cls_logits, dim=1)
+        # bbox_preds = self.regression_head(features)
+
+        # cls_logits = cls_logits.permute(0, 2, 3, 1).reshape(input.size(0), -1, 1)
+        # bbox_preds = bbox_preds.permute(0, 2, 3, 1).reshape(input.size(0), -1, self.bbox_num, 4)
+
+        return cls_logits
+
+
+class ParseBBox(gp.BatchFilter):
+    def process(self, batch, request):
+        bbox_data = batch[bbox].data
+        rois = []
+        for box in bbox_data:
+            x_min, y_min, h, w = box
+            rois.append(gp.Roi((x_min, y_min), (h, w)))
+        batch[bbox].data = rois 
+
+
+def train(
+        checkpoint_name,
+        dir,
+        max_iteration,
+        save_every=100,
+        latest_checkpoint=None):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = detectionModel().to(device)
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs for training.")
+        model = torch.nn.DataParallel(model)
+
+    loss = detectionLoss().to(device)
+    optimizer = torch.optim.Adam(lr=0.7e-4, params=model.parameters(), weight_decay=0.7e-4)
+
+    if latest_checkpoint is not None:
+        checkpoint = torch.load(latest_checkpoint)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    ck_filename = os.path.join(dir, "checkpoints")
+    if not os.path.exists(ck_filename):
+        os.makedirs(ck_filename)
+
+    raw = gp.ArrayKey('RAW')  
+    pred = gp.ArrayKey('PRED')
+    bbox = gp.ArrayKey('BBOX')
+
+    request = gp.BatchRequest()
+    request.add(raw, input_size)
+    request.add(bbox, output_size)
+    request.add(pred, output_size)
+
+    sources = tuple(
+        gp.ZarrSource(
+            "datasets/RgcDetection/mip0-size512/mip0-size512.zarr",
+            {
+                raw: f'raw/{i}',
+                bbox: f'bbox_mask/{i}'
+            },
+            {
+                raw: gp.ArraySpec(interpolatable=True, voxel_size=voxel_size),
+                bbox: gp.ArraySpec(interpolatable=False, voxel_size=voxel_size),
+            }) +
+        gp.Pad(raw, size=None) +
+        gp.Pad(bbox, size=None) 
+        for i in range(num_samples)
+    )
+
+    pipeline = sources
+
+    pipeline += gp.RandomProvider()
+
+    pipeline += gp.SimpleAugment()
+
+    pipeline += gp.ElasticAugment(
+        control_point_spacing=(40, 40),
+        jitter_sigma=(1, 1),
+        rotation_interval=(0, math.pi/4))
+
+    #pipline += ParseBBox()
+   
+    pipeline += gp.Unsqueeze([raw])
+
+    pipeline += gp.Stack(batch_size)
+
+    pipeline += gp.torch.Train(
+        model,
+        loss,
+        optimizer,
+        checkpoint_basename=os.path.join(dir,'checkpoints',checkpoint_name),
+        save_every=save_every,
+        log_dir = os.path.join(dir,'logs'),
+        
+        log_every = save_every, 
+        inputs={
+            'input': raw,
+        },
+        outputs={
+            0: pred
+        },
+        loss_inputs={
+            0: pred,
+            1: bbox,
+        })
+
+    with gp.build(pipeline):
+        for i in range(max_iteration):
+            print(f"training in iteration {i+1} ...")
+            summary_writer = SummaryWriter(log_dir=os.path.join(dir,'logs')),
+            batch = pipeline.request_batch(request)
+    summary_writer.close()
+
+
+train(
+    max_iteration=60000,
+    latest_checkpoint="trainingFiles/unetplusplus_RGCdetection/checkpoints/model_ns523_256by256_rgcDet_round3_checkpoint_5100",
+    checkpoint_name='model_ns587_512by512_rgcDet_round4',
+    dir='./trainingFiles/unetplusplus_RGCdetection',
+    save_every=100
+)
