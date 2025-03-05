@@ -11,11 +11,8 @@ import requests
 import torch
 from torch import nn
 import zarr
-from funlib.learn.torch.models import UNet, ConvPass
 from gunpowder.torch import Train
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-import torch.nn.functional as F
 from segmentation_models_pytorch import UnetPlusPlus
 import os
 
@@ -23,7 +20,6 @@ import os
 input_size = gp.Coordinate((512, 512))
 output_size = gp.Coordinate((512, 512))
 voxel_size = gp.Coordinate((1, 1))
-num_fmaps=16
 num_samples=587
 batch_size=6
 os.environ["TORCH_HOME"] = "./trainingFiles"
@@ -70,16 +66,6 @@ class detectionModel(torch.nn.Module):
         cls_logits = torch.squeeze(cls_logits, dim=1)
 
         return cls_logits
-
-
-class ParseBBox(gp.BatchFilter):
-    def process(self, batch, request):
-        bbox_data = batch[bbox].data
-        rois = []
-        for box in bbox_data:
-            x_min, y_min, h, w = box
-            rois.append(gp.Roi((x_min, y_min), (h, w)))
-        batch[bbox].data = rois 
 
 
 def train(
@@ -143,8 +129,6 @@ def train(
         control_point_spacing=(40, 40),
         jitter_sigma=(1, 1),
         rotation_interval=(0, math.pi/4))
-
-    #pipline += ParseBBox()
    
     pipeline += gp.Unsqueeze([raw])
 
