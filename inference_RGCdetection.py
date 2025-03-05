@@ -1,36 +1,29 @@
 import gunpowder as gp
 import numpy as np
-import matplotlib.pyplot as plt
 import zarr
 import torch
 from torch import nn
-from funlib.learn.torch.models import UNet, ConvPass
 import os
-import torch.nn.functional as F
 from segmentation_models_pytorch import UnetPlusPlus
 
 
-num_fmaps = 16
 input_size =  gp.Coordinate((512, 512))
 output_size = gp.Coordinate((512, 512))
-padding_size = ((0, 0), (0, 0)) #(256-248)/2
+padding_size = ((0, 0), (0, 0)) # (input_size - output_size) // 2
 
 class detectionModel(torch.nn.Module):
 
-    def __init__(self, in_channels=1, num_fmaps=num_fmaps, bbox_num=10):
+    def __init__(self, in_channels=1):
         super().__init__()
         self.in_channels = in_channels
-        self.bbox_num = bbox_num
 
         self.unetplusplus = UnetPlusPlus(
             encoder_name="resnet34",
             encoder_weights="imagenet",
-            in_channels=1,
+            in_channels=self.in_channels,
             classes=1,
             activation="sigmoid"
         )
-
-        self.classification_head = ConvPass(num_fmaps, 1, [[1, 1]], activation='Sigmoid')
 
     def forward(self, input):
 
@@ -38,34 +31,6 @@ class detectionModel(torch.nn.Module):
         cls_logits = torch.squeeze(cls_logits, dim=1)
 
         return cls_logits
-
-
-#@title utility function to view labels
-
-# matplotlib uses a default shader
-# we need to recolor as unique objects
-
-def create_lut(labels):
-
-    max_label = np.max(labels)
-
-    lut = np.random.randint(
-            low=0,
-            high=255,
-            size=(int(max_label + 1), 3),
-            dtype=np.uint64)
-
-    lut = np.append(
-            lut,
-            np.zeros(
-                (int(max_label + 1), 1),
-                dtype=np.uint8) + 255,
-            axis=1)
-
-    lut[0] = 0
-    colored_labels = lut[labels]
-
-    return colored_labels
 
 
 def predict(checkpoint, raw_file, plane, raw_idx):
@@ -142,21 +107,12 @@ def predict(checkpoint, raw_file, plane, raw_idx):
 checkpoints = ["trainingFiles/unetplusplus_RGCdetection/checkpoints/model_ns587_512by512_rgcDet_round4_checkpoint_3900"]
 raw_file = "/storage1/fs1/jlmorgan/Active/morganLab/DATA/LGN_Developing/KxR_P11LGN/diced/KxR_P11LGN_mip0_s001_749.zarr"
 planes = range(102, 749)
-start_idx = np.zeros((1, len(planes))) 
-start_idx[0] = 6028
-save_pngs = []
-
-base_path = os.path.dirname(raw_file)
-base_name = os.path.basename(raw_file)
-zarr_name = base_name
-png_name = base_name.split(".zarr")[0]
 zarr_f = zarr.open(raw_file, mode='a')
 
 for checkpoint in checkpoints:
 
     chk_num = checkpoint.split("checkpoint_")[-1]
-    #pred_data_filename = f'{base_path}/predict_RGCdetection_planes_{planes}_checkpoint{chk_num}.zarr'
-    #fi = zarr.open(pred_data_filename, mode='a')
+    pred_name = f"pred_chk{chk_num}"
 
     for i, plane in enumerate(planes):
 
@@ -168,18 +124,6 @@ for checkpoint in checkpoints:
 
         for idx in raw_idx:             
             raw, pred = predict(checkpoint, raw_file, plane, idx)
-
             pred = np.pad(pred, padding_size)
+            zarr_f[f'{plane}/{pred_name}/{idx}'] = pred
 
-            zarr_f[f'{plane}/pred/{idx}'] = pred
-
-            if idx in save_pngs:
-
-                save_filename = f'{base_path}/predict_RGCdetection_plane{plane}_img{idx}.png'
-
-                fig, axes = plt.subplots(1, 1)
-
-                axes.imshow(raw, cmap='gray')
-                axes.imshow(pred, cmap='jet', alpha=0.3)
-
-                plt.savefig(save_filename)
