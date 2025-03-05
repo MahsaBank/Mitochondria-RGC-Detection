@@ -24,8 +24,6 @@ def process_sample(sample, slice_name, zarr_f):
         
         vsub_list = []
         for prop in props:
-            
-            vsub = []
             idxs = np.where(comps == prop.label)
             vsub = np.column_stack([
                 (row * diced_size[0] + idxs[0]) // ds_factor,
@@ -43,7 +41,7 @@ def process_sample(sample, slice_name, zarr_f):
 
 if __name__ == "__main__":
     root_dir = "/storage1/fs1/jlmorgan/Active/morganLab/DATA/LGN_Developing/KxR_P11LGN/diced"
-    zarr_name = "predict_RGCdetection_plane*_checkpoint3900.zarr"
+    zarr_name = "predict_RGCdetection_planes_range(78, 86)_checkpoint3900.zarr"
     zarr_filename = os.path.join(root_dir, zarr_name)
     save_name = 'vastSubs.mat'
     save_filename = os.path.join(root_dir, save_name)
@@ -73,5 +71,5 @@ if __name__ == "__main__":
         print(f"vastSubs for plane {slice_name} is calculated.......")
 
     savemat(save_filename, {'vastSubs': all_slices_vastSubs})
-    print(f"vastSubs for planes {slice_nums} was saved in {save_filename}.")
+    print(f"vastSubs for planes {slice_names} was saved in {save_filename}.")
 
