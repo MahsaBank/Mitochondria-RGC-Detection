@@ -11,19 +11,10 @@ import requests
 import torch
 from torch import nn
 import zarr
-#import tensorflow as tf
-#from tensorflow.keras.optimizers import Adam , RMSprop
-#import tensorflow.keras.backend as K
-#from tensorflow.keras.callbacks import ModelCheckpoint , EarlyStopping , CSVLogger
-#from tensorflow.keras.losses import binary_crossentropy
-#from tensorflow.keras.models import Model
-#from tensorflow.keras.layers import *
-#from tensorflow.keras.optimizers import Adam , RMSprop
 from funlib.learn.torch.models import UNet, ConvPass
 from gunpowder.torch import Train
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from pillow_loss_model import *
 import torch.nn.functional as F
 from segmentation_models_pytorch import UnetPlusPlus
 import os
@@ -47,12 +38,8 @@ class detectionLoss(torch.nn.Module):
         self.bce_loss = torch.nn.BCELoss()
         self.smooth=smooth
 
-    def forward(self, preds, targets): #, cls_logits, target_classes):
-        # target_classes = target_classes.float()
+    def forward(self, preds, targets):
         targets = targets.float()
-
-        # loss_cls = self.classification_loss(cls_logits, target_classes)
-        # loss_bbox = self.regression_loss(bbox_preds, target_boxes)
         intersection = (preds * targets).sum(dim=(1, 2))
         union = preds.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
         dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
@@ -67,36 +54,20 @@ class detectionLoss(torch.nn.Module):
 
 
 class detectionModel(torch.nn.Module):
-
-    def __init__(self, in_channels=1, num_fmaps=num_fmaps, bbox_num=10):
+    def __init__(self, in_channels=1):
         super().__init__()
         self.in_channels = in_channels
-        self.bbox_num = bbox_num
-
         self.unetplusplus = UnetPlusPlus(
             encoder_name="resnet34",
             encoder_weights="imagenet",
-            in_channels=1,
+            in_channels=self.in_channels,
             classes=1,
             activation="sigmoid"
         )
 
-        #self.classification_head = nn.Sequential(nn.Conv2d(num_fmaps, 8, kernel_size=3, padding=1), nn.ReLU(), nn.Conv2d(8, 1, kernel_size=1))  # Shape: (batch_size, num_classes, H, W)
-        self.classification_head = ConvPass(num_fmaps, 1, [[1, 1]], activation='Sigmoid')
-
-
-        #self.regression_head = nn.Sequential(nn.Conv2d(num_fmaps, 8, kernel_size=3, padding=1), nn.ReLU(), nn.Conv2d(8, 4 * self.bbox_num, kernel_size=1))  # Shape: (batch_size, 4*bbox_num, H, W)
-
     def forward(self, input):
-
         cls_logits = self.unetplusplus(input)
-        #print(features.shape, "..............................................")
-        #cls_logits = self.classification_head(features)
         cls_logits = torch.squeeze(cls_logits, dim=1)
-        # bbox_preds = self.regression_head(features)
-
-        # cls_logits = cls_logits.permute(0, 2, 3, 1).reshape(input.size(0), -1, 1)
-        # bbox_preds = bbox_preds.permute(0, 2, 3, 1).reshape(input.size(0), -1, self.bbox_num, 4)
 
         return cls_logits
 
