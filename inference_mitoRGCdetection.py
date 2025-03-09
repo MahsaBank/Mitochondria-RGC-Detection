@@ -116,11 +116,10 @@ for checkpoint in checkpoints:
 
     for i, plane in enumerate(planes):
 
-        plane_path = os.path.join(raw_file, str(plane), "raw")
-        if os.path.exists(plane_path):
-           raw_idx = [item for item in os.listdir(plane_path) if os.path.isdir(os.path.join(plane_path, item))]
-        else:
-           raw_idx = [] 
+        raw_idx = []
+        raw_key_name = f"{plane}/raw"
+        if raw_key_name in zarr_f:
+           raw_idx = list(zarr_f[raw_key_name].keys())
 
         for idx in raw_idx:             
             raw, pred = predict(checkpoint, raw_file, plane, idx)
