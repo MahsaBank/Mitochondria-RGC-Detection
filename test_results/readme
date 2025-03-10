@@ -1,1 +1,1 @@
-These images are snapshots of RGC boutons containing mitochondria, detected by the RGC detector model, "model_ns587_512by512_rgcDet_round4_checkpoint_3900."
+These images are snapshots of RGC boutons containing mitochondria in adjacent planes within an EM stack, detected by the RGC detector model "model_ns587_512by512_rgcDet_round4_checkpoint_3900."
